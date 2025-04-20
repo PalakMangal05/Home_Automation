@@ -1,0 +1,19 @@
+This Project primarily requires 
+
+Hardware
+1. ESP32
+2. Relay Module (4 Channel)
+3. PIR Sensor
+4. DHT11
+5. MicroUSB Cable
+6. Jumper wires (M-M,M-F,F-F)
+7. Breadboard
+8. Battery/Power Module (Optional)
+
+Software
+
+1. Arduino IDE
+2. Any Code editor of your choice for HTML Code Editting
+
+Note:-
+The project is already in completely tested and working condition. any changes made to the code will purely be on experimental basis. the documentation only follows the conditions and portion in which the project is tested and found to be working.
