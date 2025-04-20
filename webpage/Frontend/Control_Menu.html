@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dashboard Menu</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background:#f0f4f8; text-align:center;
+           margin:0; padding:0; }
+    h2 { background:#0077cc; color:white; padding:1rem; margin:0; }
+    .container { display:flex; flex-direction:column; align-items:center;
+                 justify-content:center; gap:1rem; max-width:400px; margin:2rem auto; }
+    .btn { display:block; width:100%; padding:1rem; background:#0077cc; color:white;
+           text-decoration:none; font-size:1.2rem; border-radius:8px;
+           box-shadow:0 2px 4px rgba(0,0,0,0.2); transition: background 0.3s; }
+    .btn:hover { background:#005fa3; }
+  </style>
+</head>
+<body>
+  <h2>Dashboard Menu</h2>
+  <div class="container">
+    <a href="/monitor" class="btn">Real Time Monitoring</a>
+    <a href="/control" class="btn">Control Devices</a>
+    <a href="/help"    class="btn">Help Page</a>
+  </div>
+</body>
+</html>

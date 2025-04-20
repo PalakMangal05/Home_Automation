@@ -1,0 +1,311 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
+#include <DHT.h>
+
+const char* ssid     = "Palak";
+const char* password = "palakmangal";
+
+// PIN
+#define DHTPIN     4
+#define DHTTYPE    DHT11
+#define PIRPIN     15
+const int relayPins[4] = {16, 17, 18, 19};
+bool relayState[4]   = {false, false, false, false};
+
+// DEF
+void handleRelay();
+void sendSensorData();
+void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
+
+// OBJ & Timers
+DHT dht(DHTPIN, DHTTYPE);
+WebServer        server(80);
+WebSocketsServer webSocket(81);
+unsigned long    lastSensorSend   = 0;
+const unsigned long sensorInterval = 2000;
+
+//WEBPAGE
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Welcome</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background:#0077cc; color:white;
+           display:flex; flex-direction:column; align-items:center; justify-content:center;
+           height:100vh; margin:0; }
+    h1 { font-size:2rem; margin-bottom:1rem; }
+    .btn { padding:1rem 2rem; background:white; color:#0077cc; text-decoration:none;
+           font-size:1.2rem; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.2);
+           transition: background 0.3s; }
+    .btn:hover { background:#e6e6e6; }
+  </style>
+</head>
+<body>
+  <h1>Welcome to the Home Automation Dashboard A Submission by Nitin Palak & Nikita</h1>
+  <a href="/dashboard" class="btn">Enter Dashboard</a>
+</body>
+</html>
+)rawliteral";
+
+// ——— Dashboard Menu ———
+const char dashboard_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dashboard Menu</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background:#f0f4f8; text-align:center;
+           margin:0; padding:0; }
+    h2 { background:#0077cc; color:white; padding:1rem; margin:0; }
+    .container { display:flex; flex-direction:column; align-items:center;
+                 justify-content:center; gap:1rem; max-width:400px; margin:2rem auto; }
+    .btn { display:block; width:100%; padding:1rem; background:#0077cc; color:white;
+           text-decoration:none; font-size:1.2rem; border-radius:8px;
+           box-shadow:0 2px 4px rgba(0,0,0,0.2); transition: background 0.3s; }
+    .btn:hover { background:#005fa3; }
+  </style>
+</head>
+<body>
+  <h2>Dashboard Menu</h2>
+  <div class="container">
+    <a href="/monitor" class="btn">Real Time Monitoring</a>
+    <a href="/control" class="btn">Control Devices</a>
+    <a href="/help"    class="btn">Help Page</a>
+  </div>
+</body>
+</html>
+)rawliteral";
+
+// ——— Real‑Time Monitoring (Chart.js) ———
+const char monitor_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Real Time Monitoring</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family:'Segoe UI',sans-serif; background:#f7f9fc; text-align:center; margin:0; padding:1rem; }
+    h2 { color:#0077cc; }
+    canvas { max-width:90%; margin:1rem auto; background:#fff;
+             border-radius:10px; padding:1rem; box-shadow:0 2px 10px rgba(0,0,0,0.1); }
+  </style>
+</head>
+<body>
+  <h2>Real Time Monitoring</h2>
+  <canvas id="tempChart" height="200"></canvas>
+  <canvas id="humChart"  height="200"></canvas>
+  <script>
+    let tempData = [], humData = [], labels = [];
+    const maxPoints = 20;
+    const ctxT = document.getElementById('tempChart').getContext('2d');
+    const ctxH = document.getElementById('humChart'). getContext('2d');
+
+    const tempChart = new Chart(ctxT, {
+      type: 'line',
+      data: { labels: labels, datasets: [{ label:'Temp (°C)', data: tempData, borderColor:'#ff5733', fill:false }] }
+    });
+    const humChart = new Chart(ctxH, {
+      type: 'line',
+      data: { labels: labels, datasets: [{ label:'Hum (%)', data: humData, borderColor:'#3498db', fill:false }] }
+    });
+
+    const ws = new WebSocket("ws://"+location.hostname+":81/");
+    ws.onmessage = evt => {
+      const d = JSON.parse(evt.data);
+      const t = new Date().toLocaleTimeString();
+      if (labels.length>=maxPoints) {
+        labels.shift(); tempData.shift(); humData.shift();
+      }
+      labels.push(t); tempData.push(d.temp); humData.push(d.hum);
+      tempChart.update(); humChart.update();
+    };
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// ——— Control Devices (Relay Only) ———
+const char control_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Relay Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family:'Segoe UI',sans-serif; background:#f0f4f8; text-align:center; padding:1rem; margin:0; }
+    h2 { color:#0077cc; }
+    .card { background:white; max-width:400px; margin:1rem auto; padding:1rem;
+            border-radius:10px; box-shadow:0 4px 6px rgba(0,0,0,0.1); }
+    .switch-group { display:flex; justify-content:space-between; align-items:center; margin:1rem 0; }
+    .switch-label { font-size:1.1rem; }
+    .switch { position:relative; display:inline-block; width:50px; height:24px; }
+    .switch input { opacity:0; width:0; height:0; }
+    .slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0;
+              background:#ccc; transition:.4s; border-radius:34px; }
+    .slider:before { position:absolute; content:""; height:18px; width:18px;
+                     left:3px; bottom:3px; background:white; transition:.4s; border-radius:50%; }
+    input:checked + .slider { background:#0077cc; }
+    input:checked + .slider:before { transform:translateX(26px); }
+  </style>
+  <script>
+    function toggleRelay(i) {
+      const s = document.getElementById('relay'+i).checked ? 1:0;
+      fetch(`/relay?index=${i}&state=${s}`);
+    }
+    function updateRelay(d) {
+      for (let i=0;i<4;i++) document.getElementById('relay'+i).checked = d.relay[i];
+    }
+    window.onload = () => {
+      const ws = new WebSocket("ws://"+location.hostname+":81/");
+      ws.onmessage = e => updateRelay(JSON.parse(e.data));
+    };
+  </script>
+</head>
+<body>
+  <h2>Device Control Pannel</h2>
+  <div class="card">
+    <div class="switch-group"><span class="switch-label">Lights</span>
+      <label class="switch"><input type="checkbox" id="relay0" onchange="toggleRelay(0)"><span class="slider"></span></label>
+    </div>
+    <div class="switch-group"><span class="switch-label">TV</span>
+      <label class="switch"><input type="checkbox" id="relay1" onchange="toggleRelay(1)"><span class="slider"></span></label>
+    </div>
+    <div class="switch-group"><span class="switch-label">refrigrator</span>
+      <label class="switch"><input type="checkbox" id="relay2" onchange="toggleRelay(2)"><span class="slider"></span></label>
+    </div>
+    <div class="switch-group"><span class="switch-label">Air Conditioner</span>
+      <label class="switch"><input type="checkbox" id="relay3" onchange="toggleRelay(3)"><span class="slider"></span></label>
+    </div>
+  </div>
+</body>
+</html>
+)rawliteral";
+
+// ——— Help Page ———
+const char help_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Help Page</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body{ font-family:'Segoe UI',sans-serif; background:#f0f4f8; color:#333;
+          margin:0; padding:0; text-align:center; }
+    h2{ background:#0077cc; color:white; padding:1rem; margin:0; }
+    .container{ max-width:600px; margin:2rem auto; padding:1rem; background:white;
+                border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); text-align:left; }
+    p{ margin:0.5rem 0; }
+  </style>
+</head>
+<body>
+  <h2>Help & Documentation</h2>
+  <div class="container">
+    <h3>Real Time Monitoring</h3>
+    <p>View live temperature and humidity graphs.</p>
+    <h3>Control Devices</h3>
+    <p>Toggle relays to switch connected loads ON/OFF.</p>
+    <h3>General</h3>
+    <p>Make sure your browser is on the same WiFi network as the ESP32.</p>
+    <p>If you encounter issues, restart the ESP32 and reload the page.</p>
+  </div>
+</body>
+</html>
+)rawliteral";
+
+// ——— Setup ———
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  // initialize relays (active LOW)
+  for (int i = 0; i < 4; i++) {
+    pinMode(relayPins[i], OUTPUT);
+    digitalWrite(relayPins[i], HIGH);
+  }
+  pinMode(PIRPIN, INPUT);
+
+  // connect WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+
+  // HTTP routes
+  server.on("/",         HTTP_GET, [](){ server.send_P(200,"text/html",index_html); });
+  server.on("/dashboard",HTTP_GET, [](){ server.send_P(200,"text/html",dashboard_html); });
+  server.on("/monitor",  HTTP_GET, [](){ server.send_P(200,"text/html",monitor_html); });
+  server.on("/control",  HTTP_GET, [](){ server.send_P(200,"text/html",control_html); });
+  server.on("/help",     HTTP_GET, [](){ server.send_P(200,"text/html",help_html); });
+  server.on("/relay",    HTTP_GET, handleRelay);
+  server.begin();
+
+  // WebSocket
+  webSocket.begin();
+  webSocket.onEvent(onWebSocketEvent);
+}
+
+// ——— Main Loop ———
+void loop() {
+  server.handleClient();
+  webSocket.loop();
+
+  if (millis() - lastSensorSend >= sensorInterval) {
+    sendSensorData();
+    lastSensorSend = millis();
+  }
+}
+
+// ——— Relay Control Handler ———
+void handleRelay() {
+  if (!server.hasArg("index") || !server.hasArg("state")) {
+    server.send(400, "application/json", "{\"success\":false}");
+    return;
+  }
+  int idx   = server.arg("index").toInt();
+  int state = server.arg("state").toInt();
+  if (idx < 0 || idx > 3) {
+    server.send(400, "application/json", "{\"success\":false}");
+    return;
+  }
+  relayState[idx] = (state == 1);
+  digitalWrite(relayPins[idx], relayState[idx] ? LOW : HIGH);
+  Serial.printf("Relay %d set to %s\n", idx, relayState[idx]?"ON":"OFF");
+  sendSensorData();
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+// ——— Send Sensor Data via WebSocket ———
+void sendSensorData() {
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  int pirVal = digitalRead(PIRPIN);
+  if (isnan(t) || isnan(h)) {
+    Serial.println("DHT read failed");
+    return;
+  }
+  String json = "{";
+  json += "\"temp\":" + String(t,1)  + ",";
+  json += "\"hum\":"  + String(h,1)  + ",";
+  json += "\"pir\":"  + String(pirVal)+ ",";
+  json += "\"relay\":[" + String(relayState[0]) + "," + String(relayState[1]) + "," +
+                         String(relayState[2]) + "," + String(relayState[3]) + "]";
+  json += "}";
+  webSocket.broadcastTXT(json);
+}
+
+// ——— WebSocket Event ———
+void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  if (type == WStype_CONNECTED) {
+    Serial.printf("WebSocket client %u connected\n", num);
+    sendSensorData();
+  }
+}
+
